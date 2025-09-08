@@ -1,4 +1,4 @@
-# idioms-allusions
+# idioms-allusions（英語成句・典拠）
 A simple web app to browse idioms &amp; allusions. Supports CSV upload, random navigation, and English TTS with sentence highlighting.
 
 英語の成句・典拠を学ぶための Web アプリです。  
