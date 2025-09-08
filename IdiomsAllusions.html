@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Idioms & Allusions（英語成句・典拠）</title>
+<style>
+  :root{--w:860px;--muted:#666}
+  body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:24px;display:flex;justify-content:center;background:#fafafa;color:#222}
+  .wrap{width:min(100%,var(--w))}
+  h1{font-size:22px;margin:0 0 12px}
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin:12px 0 16px}
+  .card{border:1px solid #ddd;border-radius:14px;padding:18px;background:#fff;box-shadow:0 2px 10px rgba(0,0,0,.05)}
+  .row{margin:8px 0}
+  .label{font-weight:600;color:#444;display:inline-block;width:10.5em;vertical-align:top}
+  .value{white-space:pre-wrap}
+  .title{font-size:22px;font-weight:700;margin-bottom:8px}
+  .muted{color:var(--muted);font-size:12px}
+  button{padding:8px 14px;border:1px solid #ccc;border-radius:10px;background:#fff;cursor:pointer}
+  button:hover{background:#f3f3f3}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  input[type="file"]{padding:6px}
+  input[type="range"]{width:180px}
+  .counter{margin-left:auto;font-variant-numeric:tabular-nums}
+  #err{margin-top:10px;color:#b00020;white-space:pre-wrap}
+  .hl{background:#fff5a8;border-radius:6px;padding:0 2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Idioms & Allusions <span class="muted">（英語成句・典拠）</span></h1>
+  <div class="toolbar">
+    <input id="fileInput" type="file" accept=".csv" />
+    <button id="prevBtn" disabled>◀ 前へ</button>
+    <button id="nextBtn" disabled>次へ ▶</button>
+    <button id="randBtn" disabled>🔀 ランダム</button>
+    <button id="speakBtn" disabled>🔊 読み上げ</button>
+    <button id="stopBtn" disabled>⏹ 停止</button>
+    <span class="counter" id="counter">0 / 0</span>
+  </div>
+  <div class="toolbar" style="margin-top:-6px">
+    <label class="muted">速度 <span id="rateVal">(1.00)</span></label>
+    <input id="rate" type="range" min="0.6" max="1.6" step="0.05" value="1.0" />
+    <label class="muted" style="display:flex;align-items:center;gap:6px">
+      <input id="autoToggle" type="checkbox" checked /> 新規表示で自動読み上げ（英語表現→例文）
+    </label>
+    <label class="muted" style="display:flex;align-items:center;gap:6px">
+      <input id="highlightToggle" type="checkbox" checked /> 文ごとにハイライト
+    </label>
+  </div>
+
+  <div id="card" class="card">
+    <div class="title" id="英語表現">CSV を読み込んでください</div>
+    <div class="row"><span class="label">意味</span><span class="value" id="意味">—</span></div>
+    <div class="row"><span class="label">由来</span><span class="value" id="由来">—</span></div>
+    <div class="row"><span class="label">例文</span><span class="value" id="例文">—</span></div>
+    <div class="row"><span class="label">日本語訳</span><span class="value" id="日本語訳">—</span></div>
+    <div class="row"><span class="label">近い日本語表現</span><span class="value" id="近い日本語表現">—</span></div>
+    <div class="muted">※ 列は「英語表現, 意味, 由来, 例文, 日本語訳, 近い日本語表現」を想定（表記ゆれ対応）</div>
+    <div id="err"></div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script>
+// 修正版：例文が前のものに残る問題の対策
+// 1) 画面更新トークン(viewToken)で古いTTSコールバックを無効化
+// 2) ナビゲーション時に必ずTTSを停止
+// 3) 表示切替時に例文を都度描画し直し
+
+let rows = [], idx = 0;
+const ids = [\"英語表現\",\"意味\",\"由来\",\"例文\",\"日本語訳\",\"近い日本語表現\"];
+const els = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+let exampleEl = document.getElementById('例文'); // 例文ノード参照（後で完全差し替え）;
+const counter = document.getElementById('counter');
+const errBox = document.getElementById('err');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const randBtn = document.getElementById('randBtn');
+const speakBtn = document.getElementById('speakBtn');
+const stopBtn = document.getElementById('stopBtn');
+const rate = document.getElementById('rate');
+const rateVal = document.getElementById('rateVal');
+const highlightToggle = document.getElementById('highlightToggle');
+const autoToggle = document.getElementById('autoToggle');
+let userInteracted = false; // iOS対策: 初回は操作後に自動再生
+let viewToken = 0;          // 画面更新トークン（レース防止）
+
+function updateRateLabel(){ rateVal.textContent = '(' + Number(rate.value).toFixed(2) + ')'; }
+updateRateLabel();
+rate.addEventListener('input', updateRateLabel);
+
+function show(i){
+  const r = rows[i]; if(!r) return;
+  viewToken++;
+  stopSpeech();
+  els["英語表現"].textContent = r["英語表現"]||"—";
+  els["意味"].textContent = r["意味"]||"—";
+  els["由来"].textContent = r["由来"]||"—";
+  renderExample(r["例文"]||"");
+  els["日本語訳"].textContent = r["日本語訳"]||"—";
+  els["近い日本語表現"].textContent = r["近い日本語表現"]||"—";
+  counter.textContent = `${idx+1} / ${rows.length}`;
+  if(autoToggle.checked){
+    if(userInteracted){
+      const token = viewToken;
+      requestAnimationFrame(()=> setTimeout(()=>{ if(token===viewToken) autoSpeakCurrent(); }, 0));
+    } else {
+      showAutoHint();
+    }
+  }
+} / ${rows.length}`;
+  if(autoToggle.checked){
+    if(userInteracted){ stopSpeech(); autoSpeakCurrent(); }
+    else showAutoHint();
+  }
+}
+
+function enableNav(enable){
+  [prevBtn,nextBtn,randBtn,speakBtn,stopBtn].forEach(b=>b.disabled=!enable);
+}
+
+// 文分割（シンプル）
+function splitSentences(text){
+  if(!text) return [];
+  const cleaned = text.replace(/\s+/g,' ').trim();
+  if(!cleaned) return [];
+  const parts = cleaned.match(/[^.!?]+[.!?]*/g) || [cleaned];
+  return parts.map(s=>s.trim()).filter(Boolean);
+}
+
+// 例文のハイライト描画
+let currentSentences = [];
+function renderExample(text){
+  currentSentences = splitSentences(text);
+  const newEl = exampleEl.cloneNode(false);
+  newEl.id = '例文';
+  if(!currentSentences.length){
+    newEl.textContent = '—';
+  } else {
+    newEl.innerHTML = currentSentences.map((s,i)=>`<span data-i="${i}">${escapeHtml(s)}</span>${i<currentSentences.length-1?' ':''}`).join('');
+  }
+  exampleEl.replaceWith(newEl);
+  exampleEl = newEl;
+  clearHighlight();
+}
+  els[\"例文\"].innerHTML = currentSentences.map((s,i)=>`<span data-i=\"${i}\">${escapeHtml(s)}</span>${i<currentSentences.length-1?' ':''}`).join('');
+  clearHighlight();
+}
+function setHighlight(i){
+  if(!highlightToggle.checked) return;
+  const spans = els[\"例文\"].querySelectorAll('span');
+  spans.forEach((sp,idx)=>{ if(idx===i) sp.classList.add('hl'); else sp.classList.remove('hl'); });
+}
+function clearHighlight(){ const spans = els[\"例文\"].querySelectorAll('span'); spans.forEach(sp=>sp.classList.remove('hl')); }
+function escapeHtml(s){ return (s||'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;','\'':'&#39;'}[c])); }
+
+// CSV読み込み（CSV専用）
+function loadCSV(file){
+  Papa.parse(file, {
+    header:true, skipEmptyLines:true,
+    complete: ({data,meta}) => {
+      const fields = meta.fields || Object.keys(data[0]||{});
+      const pick = (o, keys) => { for(const k of keys){ if(o[k]!=null && o[k]!===\"\") return String(o[k]); } return \"\"; };
+      rows = data.map(r=>({
+        \"英語表現\": pick(r, [\"英語表現\",\"Idiom\",\"Term\",\"英語\",\"English\"]),
+        \"意味\": pick(r, [\"意味\",\"Meaning\"]),
+        \"由来\": pick(r, [\"由来\",\"Origin\",\"語源\"]),
+        \"例文\": pick(r, [\"例文\",\"Example\",\"Sentence\"]),
+        \"日本語訳\": pick(r, [\"日本語訳\",\"Translation\",\"和訳\"]),
+        \"近い日本語表現\": pick(r, [\"近い日本語表現\",\"類似表現\",\"対応表現\"]),
+      })).filter(r=>Object.values(r).some(v=>v));
+      if(rows.length){ idx=0; show(idx); enableNav(true); errBox.textContent=''; }
+      else{ errBox.textContent = 'CSVが空か列名が不一致です（UTF-8推奨）。検出ヘッダー: '+fields.join(' | '); enableNav(false); }
+    },
+    error: (err) => { errBox.textContent = 'CSVの読み込みでエラー: '+err; enableNav(false); }
+  });
+}
+
+// ナビゲーション（必ず停止→表示）
+nextBtn.onclick=()=>{ userInteracted=true; if(rows.length){ idx=(idx+1)%rows.length; show(idx); } };
+prevBtn.onclick=()=>{ userInteracted=true; if(rows.length){ stopSpeech(); idx=(idx-1+rows.length)%rows.length; show(idx); } };
+randBtn.onclick=()=>{ userInteracted=true; if(rows.length){ stopSpeech(); idx=Math.floor(Math.random()*rows.length); show(idx); } };
+
+// 音声（英語のみ）
+let speaking = false, currentIndex = -1;
+function getEnglishVoice(){
+  const voices = window.speechSynthesis.getVoices();
+  return voices.find(v=>/^en(\b|[-_])/i.test(v.lang)) || voices[0] || null;
+}
+function speakIdiomAndExample(idiom, sentences, token){
+  const queue = [];
+  if(idiom) queue.push({type:'idiom', text: idiom});
+  sentences.forEach((s,i)=> queue.push({type:'sent', index:i, text:s}));
+  if(!queue.length) return;
+  speaking = true; currentIndex = 0; clearHighlight();
+  const next = () => {
+    // 画面更新済みなら古い再生は無効化
+    if(token !== viewToken){ speaking=false; currentIndex=-1; return; }
+    if(currentIndex >= queue.length){ speaking=false; currentIndex=-1; clearHighlight(); return; }
+    const item = queue[currentIndex];
+    const u = new SpeechSynthesisUtterance(item.text);
+    const v = getEnglishVoice(); if(v) u.voice = v;
+    u.rate = Number(rate.value)||1; u.pitch = 1; u.volume = 1;
+    u.onend = () => { if(token !== viewToken) return; currentIndex++; if(item.type==='sent') setHighlight(item.index+1); else setHighlight(0); next(); };
+    u.onerror = () => { if(token !== viewToken) return; currentIndex++; next(); };
+    if(item.type==='sent') setHighlight(item.index); else clearHighlight();
+    window.speechSynthesis.speak(u);
+  };
+  window.speechSynthesis.cancel();
+  next();
+}
+function stopSpeech(){ window.speechSynthesis.cancel(); speaking=false; currentIndex=-1; clearHighlight(); }
+
+function autoSpeakCurrent(){
+  const r = rows[idx];
+  const sentences = splitSentences(r[\"例文\"]||\"\");
+  const idiom = (r[\"英語表現\"]||\"\").trim();
+  const token = viewToken; // 現在の画面トークン
+  speakIdiomAndExample(idiom, sentences, token);
+}
+
+speakBtn.onclick=()=>{ userInteracted=true; if(!rows.length) return; stopSpeech(); autoSpeakCurrent(); };
+stopBtn.onclick=()=>{ userInteracted=true; stopSpeech(); };
+
+// 例文内のクリックでその文から再生
+els[\"例文\"].addEventListener('click',(e)=>{
+  userInteracted = true;
+  const sp = e.target.closest('span[data-i]');
+  if(!sp) return;
+  const i = Number(sp.dataset.i||'-1');
+  if(i<0) return;
+  stopSpeech();
+  const sentences = currentSentences.slice(i);
+  const token = viewToken;
+  speakIdiomAndExample('', sentences, token); // idiomは省略して、その文から
+});
+
+// 自動読み上げのヒント（iOS初回）
+function showAutoHint(){
+  if(document.getElementById('autoHint')) return;
+  const hint = document.createElement('div');
+  hint.id='autoHint';
+  hint.className='muted';
+  hint.textContent='（ヒント）iPhone/iPadは初回に何かボタンを押すと自動読み上げが有効になります。';
+  document.querySelector('.wrap').insertBefore(hint, document.getElementById('card'));
+}
+
+// CSVのみ
+fileInput.addEventListener('change',e=>{
+  userInteracted = true;
+  const f=e.target.files?.[0]; if(!f) return;
+  if(!f.name.toLowerCase().endsWith('.csv')){ errBox.textContent='CSVファイル（.csv）を選択してください'; enableNav(false); return; }
+  stopSpeech();
+  loadCSVsmart(f);
+});
+
+// どこかをクリック/タップしたら許可されたとみなす
+window.addEventListener('pointerdown', ()=>{ userInteracted = true; });
+// 賢いCSVローダ（区切り/文字コードを自動リトライ）
+function loadCSVsmart(file){
+  const tryConfigs = [
+    {header:true, skipEmptyLines:true},                    // 自動判定（カンマ/タブ）
+    {header:true, skipEmptyLines:true, delimiter:'	'},   // 明示タブ
+    {header:true, skipEmptyLines:true, encoding:'Shift_JIS'},
+    {header:true, skipEmptyLines:true, delimiter:'	', encoding:'Shift_JIS'}
+  ];
+  let tried = 0;
+  const attempt = () => {
+    if(tried >= tryConfigs.length){
+      errBox.textContent = 'CSVが空か列名が不一致です（UTF-8推奨）。Excel由来なら「CSV UTF-8 (カンマ区切り)」で保存してください。';
+      enableNav(false);
+      return;
+    }
+    const cfg = tryConfigs[tried++];
+    Papa.parse(file, {
+      ...cfg,
+      complete: ({data,meta}) => {
+        const fields = meta.fields || Object.keys(data[0]||{});
+        const pick = (o, keys) => { for(const k of keys){ if(o[k]!=null && o[k]!=="") return String(o[k]); } return ""; };
+        const mapped = data.map(r=>({
+          "英語表現": pick(r, ["英語表現","Idiom","Term","英語","English"]),
+          "意味": pick(r, ["意味","Meaning"]),
+          "由来": pick(r, ["由来","Origin","語源"]),
+          "例文": pick(r, ["例文","Example","Sentence"]),
+          "日本語訳": pick(r, ["日本語訳","Translation","和訳"]),
+          "近い日本語表現": pick(r, ["近い日本語表現","類似表現","対応表現"]),
+        })).filter(r=>Object.values(r).some(v=>v));
+        if(mapped.length){ rows = mapped; idx=0; show(idx); enableNav(true); errBox.textContent=''; }
+        else { attempt(); }
+      },
+      error: () => attempt()
+    });
+  };
+  attempt();
+}
+</script>
+<script>
+// ===== Robust CSV loader + TTS viewer =====
+let rows = [], idx = 0, viewToken = 0;
+const ids = ["英語表現","意味","由来","例文","日本語訳","近い日本語表現"];
+const els = Object.fromEntries(ids.map(id => [id, document.getElementById(id)]));
+let exampleEl = document.getElementById('例文');
+const counter = document.getElementById('counter');
+const errBox = document.getElementById('err');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const randBtn = document.getElementById('randBtn');
+const speakBtn = document.getElementById('speakBtn');
+const stopBtn = document.getElementById('stopBtn');
+const rate = document.getElementById('rate');
+const rateVal = document.getElementById('rateVal');
+const highlightToggle = document.getElementById('highlightToggle');
+const autoToggle = document.getElementById('autoToggle');
+const fileInput = document.getElementById('fileInput');
+let userInteracted = false;
+
+function updateRateLabel(){ rateVal.textContent = '(' + Number(rate.value).toFixed(2) + ')'; }
+updateRateLabel();
+rate.addEventListener('input', updateRateLabel);
+
+function enableNav(on){ [prevBtn,nextBtn,randBtn,speakBtn,stopBtn].forEach(b=>b.disabled=!on); }
+
+function show(i){
+  const r = rows[i]; if(!r) return;
+  viewToken++;
+  stopSpeech();
+  els["英語表現"].textContent = r["英語表現"]||"—";
+  els["意味"].textContent = r["意味"]||"—";
+  els["由来"].textContent = r["由来"]||"—";
+  renderExample(r["例文"]||"");
+  els["日本語訳"].textContent = r["日本語訳"]||"—";
+  els["近い日本語表現"].textContent = r["近い日本語表現"]||"—";
+  counter.textContent = `${idx+1} / ${rows.length}`;
+  if(autoToggle.checked){
+    if(userInteracted){
+      const t=viewToken;
+      requestAnimationFrame(()=>setTimeout(()=>{ if(t===viewToken) autoSpeakCurrent(); },0));
+    } else {
+      showAutoHint();
+    }
+  }
+}
+
+// ------- Example rendering & highlight -------
+let currentSentences = [];
+function splitSentences(text){
+  if(!text) return [];
+  const cleaned = String(text).replace(/\s+/g,' ').trim();
+  if(!cleaned) return [];
+  const parts = cleaned.match(/[^.!?]+[.!?]*/g) || [cleaned];
+  return parts.map(s=>s.trim()).filter(Boolean);
+}
+function renderExample(text){
+  currentSentences = splitSentences(text);
+  const newEl = exampleEl.cloneNode(false); newEl.id = '例文';
+  if(!currentSentences.length){ newEl.textContent='—'; }
+  else { newEl.innerHTML = currentSentences.map((s,i)=>`<span data-i="${i}">${escapeHtml(s)}</span>${i<currentSentences.length-1?' ':''}`).join(''); }
+  exampleEl.replaceWith(newEl); exampleEl = newEl; clearHighlight();
+}
+function setHighlight(i){
+  if(!highlightToggle.checked) return;
+  const spans=exampleEl.querySelectorAll('span');
+  spans.forEach((sp,idx)=>{ if(idx===i) sp.classList.add('hl'); else sp.classList.remove('hl'); });
+}
+function clearHighlight(){ const spans=exampleEl.querySelectorAll('span'); spans.forEach(sp=>sp.classList.remove('hl')); }
+function escapeHtml(s){ return (s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[c])); }
+
+// 再生：例文内クリックでその文から
+exampleEl.addEventListener('click',(e)=>{
+  userInteracted = true;
+  const sp = e.target.closest('span[data-i]'); if(!sp) return;
+  const i = Number(sp.dataset.i); stopSpeech(); const rest = currentSentences.slice(i);
+  speakIdiomAndExample('', rest);
+});
+
+// ------- CSV loader (robust) -------
+// ヘッダーの見えないBOMや全角空白も除去して正規化
+function normalizeHeader(h){ return String(h||'').replace(/\uFEFF/g,'').replace(/[\s\u3000]+/g,'').trim(); }
+const headerAliases = {
+  英語表現:['英語表現','Idiom','Term','英語','English'],
+  意味:['意味','Meaning'],
+  由来:['由来','Origin','語源'],
+  例文:['例文','Example','Sentence'],
+  日本語訳:['日本語訳','Translation','和訳'],
+  近い日本語表現:['近い日本語表現','類似表現','対応表現']
+};
+const aliasNorm = Object.fromEntries(Object.entries(headerAliases).map(([k,arr])=>[k,arr.map(normalizeHeader)]));
+
+fileInput.addEventListener('change',e=>{
+  userInteracted = true; const f=e.target.files?.[0]; if(!f) return;
+  if(!f.name.toLowerCase().endsWith('.csv')){ errBox.textContent='CSVファイル（.csv）を選択してください'; enableNav(false); return; }
+  loadCSVsmart(f);
+});
+
+// カンマ/タブの両方を試し、ヘッダーは transform で正規化
+function loadCSVsmart(file){
+  const tryConfigs = [
+    {header:true, skipEmptyLines:true, transformHeader: h=>normalizeHeader(h)},
+    {header:true, skipEmptyLines:true, delimiter:'\t', transformHeader: h=>normalizeHeader(h)}
+  ];
+  let tried = 0;
+  const attempt = () => {
+    if(tried >= tryConfigs.length){
+      errBox.textContent='CSVが空か列名が不一致です。Excelなら「CSV UTF-8 (カンマ区切り)」で保存してください。';
+      enableNav(false); return;
+    }
+    const cfg = tryConfigs[tried++];
+    Papa.parse(file, {
+      ...cfg,
+      complete: ({data,meta}) => {
+        const fields = (meta.fields||[]).map(normalizeHeader);
+        const mapped = data.map(orig => {
+          // 正規化キーで参照
+          const o = {}; Object.keys(orig||{}).forEach(k=>{ o[normalizeHeader(k)] = orig[k]; });
+          const out = {};
+          for(const [canon, keys] of Object.entries(aliasNorm)){
+            out[canon] = '';
+            for(const k of keys){ if(o[k] != null && o[k] !== ''){ out[canon] = String(o[k]); break; } }
+          }
+          return out;
+        }).filter(r=>Object.values(r).some(v=>v));
+        if(mapped.length){ rows = mapped; idx=0; show(idx); enableNav(true); errBox.textContent=''; }
+        else { errBox.textContent = 'ヘッダーを認識できませんでした。検出: '+fields.join(' | '); attempt(); }
+      },
+      error: () => attempt()
+    });
+  };
+  attempt();
+}
+
+// ------- TTS (English only) -------
+let speaking=false, currentIndex=-1;
+function getEnglishVoice(){ const vs = window.speechSynthesis.getVoices(); return vs.find(v=>/^en(\b|[-_])/i.test(v.lang)) || vs[0] || null; }
+function speakIdiomAndExample(idiom, sentences){
+  const queue=[]; if(idiom) queue.push({type:'idiom', text:idiom}); sentences.forEach((s,i)=>queue.push({type:'sent', index:i, text:s}));
+  if(!queue.length) return; speaking=true; currentIndex=0; clearHighlight();
+  const token=viewToken;
+  const next=()=>{
+    if(!speaking || token!==viewToken) { speaking=false; return; }
+    if(currentIndex>=queue.length){ speaking=false; currentIndex=-1; clearHighlight(); return; }
+    const item=queue[currentIndex]; const u=new SpeechSynthesisUtterance(item.text); const v=getEnglishVoice(); if(v) u.voice=v;
+    u.rate=Number(rate.value)||1; u.pitch=1; u.volume=1;
+    u.onend=()=>{ currentIndex++; if(item.type==='sent') setHighlight(item.index+1); else setHighlight(0); next(); };
+    u.onerror=()=>{ currentIndex++; next(); };
+    if(item.type==='sent') setHighlight(item.index); else clearHighlight();
+    window.speechSynthesis.speak(u);
+  };
+  window.speechSynthesis.cancel(); next();
+}
+function stopSpeech(){ window.speechSynthesis.cancel(); speaking=false; currentIndex=-1; clearHighlight(); }
+function autoSpeakCurrent(){ const r=rows[idx]; const sentences=splitSentences(r["例文"]||""); const idiom=(r["英語表現"]||'').trim(); speakIdiomAndExample(idiom, sentences); }
+
+// Nav + UX
+nextBtn.onclick=()=>{ userInteracted=true; if(rows.length){ idx=(idx+1)%rows.length; show(idx); } };
+prevBtn.onclick=()=>{ userInteracted=true; if(rows.length){ idx=(idx-1+rows.length)%rows.length; show(idx); } };
+randBtn.onclick=()=>{ userInteracted=true; if(rows.length){ idx=Math.floor(Math.random()*rows.length); show(idx); } };
+speakBtn.onclick=()=>{ userInteracted=true; if(!rows.length) return; autoSpeakCurrent(); };
+stopBtn.onclick=()=>{ userInteracted=true; stopSpeech(); };
+
+function showAutoHint(){
+  if(document.getElementById('autoHint')) return;
+  const hint=document.createElement('div');
+  hint.id='autoHint'; hint.className='muted';
+  hint.textContent='（ヒント）iPhone/iPadは初回に何かボタンを押すと自動読み上げが有効になります。';
+  document.querySelector('.wrap').insertBefore(hint, document.getElementById('card'));
+}
+window.addEventListener('pointerdown', ()=>{ userInteracted=true; });
+</script>
+</body>
+</html>
